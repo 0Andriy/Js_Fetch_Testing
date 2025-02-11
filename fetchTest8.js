@@ -1,5 +1,12 @@
 class FetchInterceptor {
-    constructor({ getToken, refreshTokens, onAuthFailure, baseUrl = '', defaultHeaders = {} }) {
+    constructor({
+        getToken,
+        refreshTokens,
+        onAuthFailure,
+        baseUrl = '',
+        defaultHeaders = {},
+        maxRetryAttempts = 2,
+    }) {
         this.getToken = getToken
         this.refreshTokens = refreshTokens
         this.onAuthFailure = onAuthFailure || (() => {})
@@ -7,6 +14,7 @@ class FetchInterceptor {
         this.defaultHeaders = defaultHeaders
         this.tokenRefreshing = false
         this.pendingRequests = []
+        this.maxRetryAttempts = maxRetryAttempts
     }
 
     /**
@@ -54,10 +62,7 @@ class FetchInterceptor {
      * @returns {Promise<any>} - результат запиту
      * @example: fetch('https://api.example.com/data', { method: 'GET' })
      * */
-    async fetch(url, options = {}, customTokens = {}) {
-        // Get accessToken from customTokens or call getToken method
-        let accessToken = customTokens.accessToken || (await this.getToken())
-
+    async fetch(url, options = {}, customTokens = {}, attempt = 0) {
         // Default options for fetch - Default options are marked with *
         const defaultOptions = {
             method: 'GET', // *GET, POST, PUT, DELETE, etc.
@@ -86,17 +91,27 @@ class FetchInterceptor {
             finalOptions.body = JSON.stringify(options.data)
         }
 
-        // Add Authorization header if accessToken is provided
-        if (accessToken) {
-            finalOptions.headers.Authorization = `Bearer ${accessToken}`
+        if (!options.skipAuth) {
+            // Get accessToken from customTokens or call getToken method
+            let accessToken = customTokens.accessToken || (await this.getToken())
+
+            //
+            if (!customTokens.accessToken && accessToken && this.isTokenExpired(accessToken)) {
+                return this.handleUnauthorizedRequest(url, options, attempt)
+            }
+
+            // Add Authorization header if accessToken is provided
+            if (accessToken) {
+                finalOptions.headers.Authorization = `Bearer ${accessToken}`
+            }
         }
 
         // Call fetch with the final options
-        return this.fetchWithInterceptors(url, finalOptions, customTokens)
+        return this.fetchWithInterceptors(url, finalOptions, customTokens, attempt)
     }
 
     //
-    async fetchWithInterceptors(url, options, customTokens) {
+    async fetchWithInterceptors(url, options, customTokens, attempt) {
         let timeoutId = null
 
         if (options.timeout && typeof options.timeout === 'number' && options.timeout > 0) {
@@ -106,15 +121,10 @@ class FetchInterceptor {
         }
 
         try {
-            //
-            if (!customTokens.accessToken && this.isTokenExpired(accessToken)) {
-                return this.handleUnauthorizedRequest(url, options)
-            }
-
             const response = await fetch(this.buildUrl(url, options.params || {}), options)
 
             if (response.status === 401 && !customTokens.accessToken) {
-                return this.handleUnauthorizedRequest(url, options)
+                return this.handleUnauthorizedRequest(url, options, attempt)
             }
 
             return this.handleResponse(response, options.responseType || 'json')
@@ -125,12 +135,17 @@ class FetchInterceptor {
         }
     }
 
-    async handleUnauthorizedRequest(url, options) {
+    async handleUnauthorizedRequest(url, options, attempt) {
+        if (attempt >= this.maxRetryAttempts) {
+            this.onAuthFailure()
+            throw new Error('Max token refresh attempts reached')
+        }
+
         if (this.tokenRefreshing) {
             return new Promise((resolve, reject) => {
                 this.pendingRequests.push(async () => {
                     try {
-                        resolve(await this.fetch(url, options))
+                        resolve(await this.fetch(url, options, {}, attempt + 1))
                     } catch (err) {
                         reject(err)
                     }
@@ -144,7 +159,7 @@ class FetchInterceptor {
             this.tokenRefreshing = false
             this.pendingRequests.forEach((cb) => cb())
             this.pendingRequests = []
-            return this.fetch(url, options)
+            return this.fetch(url, options, {}, attempt + 1)
         } catch (error) {
             this.tokenRefreshing = false
             this.pendingRequests.forEach((cb) =>
@@ -153,6 +168,9 @@ class FetchInterceptor {
             this.pendingRequests = []
             this.onAuthFailure()
             throw new Error('Token refresh failed')
+        } finally {
+            this.tokenRefreshing = false
+            this.pendingRequests = []
         }
     }
 
@@ -190,19 +208,24 @@ class FetchInterceptor {
 
 // === Ініціалізація ===
 const $fetch = new FetchInterceptor({
-    getToken: async () => localStorage.getItem('accessToken'),
+    getToken: async () => {
+        // localStorage.getItem('accessToken')
+        return 'accessToken'
+    },
     refreshTokens: async () => {
+        const refreshToken = localStorage.getItem('refreshToken')
+
         const response = await fetch('https://api.example.com/auth/refresh', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ refreshTokens: localStorage.getItem('refreshToken') }),
+            body: JSON.stringify({ refreshToken }),
         })
 
         if (!response.ok) throw new Error('Failed to refresh token')
 
         const data = await response.json()
-        localStorage.setItem('accessToken', data.accessToken)
-        localStorage.setItem('refreshToken', data.refreshTokens)
+        // localStorage.setItem('accessToken', data.accessToken)
+        // localStorage.setItem('refreshToken', data.refreshTokens)
     },
     onAuthFailure: () => {
         console.error('Authentication failed. Redirecting to login...')
@@ -212,9 +235,39 @@ const $fetch = new FetchInterceptor({
     },
     baseUrl: 'https://api.example.com',
     defaultHeaders: { 'X-Custom-Header': 'MyValue' },
+    maxRetryAttempts: 2,
 })
 
 // === Експорт для використання ===
 export default function fetchRequest(url, options = {}, customTokens = {}) {
     return $fetch.fetch(url, options, customTokens)
+}
+
+// === Тестування ===
+// Перевірка, чи файл запущений напряму
+if (import.meta.url === new URL('', import.meta.url).href) {
+    ;(async () => {
+        console.log('Запуск тестів...')
+
+        // Ініціалізація тестових токенів
+        // localStorage.setItem('accessToken', 'testAccessToken');
+        // localStorage.setItem('refreshToken', 'testRefreshToken');
+
+        try {
+            // Тест оновлення токенів
+            console.log('Тест: Оновлення токенів...')
+            // const newToken = await updateTokens();
+            // console.log('Новий токен:', newToken);
+
+            // Тест запиту через $fetch
+            console.log('Тест: Виконання запиту через $fetch...')
+            const response = await fetchRequest('https://jsonplaceholder.typicode.com/posts/1', {
+                method: 'GET',
+                skipAuth: true,
+            })
+            console.log('Результат запиту:', response)
+        } catch (error) {
+            console.error('Помилка при тестуванні:', error)
+        }
+    })()
 }
