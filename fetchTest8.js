@@ -9,7 +9,7 @@ class FetchInterceptor {
     }) {
         this.getToken = getToken
         this.refreshTokens = refreshTokens
-        this.onAuthFailure = onAuthFailure || (() => {})
+        this.onAuthFailure = onAuthFailure || ((options) => {})
         this.baseUrl = baseUrl
         this.defaultHeaders = defaultHeaders
         this.tokenRefreshing = false
@@ -138,7 +138,7 @@ class FetchInterceptor {
 
     async handleUnauthorizedRequest(url, options, attempt) {
         if (attempt >= this.maxRetryAttempts) {
-            this.onAuthFailure()
+            this.onAuthFailure(options)
             throw new Error('Max token refresh attempts reached')
         }
 
@@ -167,7 +167,7 @@ class FetchInterceptor {
                 cb(Promise.reject(new Error('Token refresh failed'))),
             )
             this.pendingRequests = []
-            this.onAuthFailure()
+            this.onAuthFailure(options)
             throw new Error('Token refresh failed')
         } finally {
             this.tokenRefreshing = false
@@ -228,7 +228,7 @@ const $fetch = new FetchInterceptor({
         // localStorage.setItem('accessToken', data.accessToken)
         // localStorage.setItem('refreshToken', data.refreshTokens)
     },
-    onAuthFailure: () => {
+    onAuthFailure: (options) => {
         console.error('Authentication failed. Redirecting to login...')
         if (typeof window !== 'undefined') {
             window.location.href = '/login'
