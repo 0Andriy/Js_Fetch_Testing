@@ -91,9 +91,10 @@ class FetchInterceptor {
             finalOptions.body = JSON.stringify(options.data)
         }
 
+        //
         if (!options.skipAuth) {
             // Get accessToken from customTokens or call getToken method
-            let accessToken = customTokens.accessToken || (await this.getToken())
+            let accessToken = customTokens.accessToken || (await this.getToken(options))
 
             //
             if (!customTokens.accessToken && accessToken && this.isTokenExpired(accessToken)) {
@@ -155,7 +156,7 @@ class FetchInterceptor {
 
         this.tokenRefreshing = true
         try {
-            await this.refreshTokens()
+            await this.refreshTokens(options)
             this.tokenRefreshing = false
             this.pendingRequests.forEach((cb) => cb())
             this.pendingRequests = []
@@ -208,11 +209,11 @@ class FetchInterceptor {
 
 // === Ініціалізація ===
 const $fetch = new FetchInterceptor({
-    getToken: async () => {
+    getToken: async (options) => {
         // localStorage.getItem('accessToken')
         return 'accessToken'
     },
-    refreshTokens: async () => {
+    refreshTokens: async (options) => {
         const refreshToken = localStorage.getItem('refreshToken')
 
         const response = await fetch('https://api.example.com/auth/refresh', {
